@@ -1,0 +1,15 @@
+# Local development only: starts the PostgreSQL metadata database used by
+# `go run ./backend/bin/server/main.go` (see docs/pre-pr-checklist.md and
+# AGENTS.md for the full dev workflow). Not used for production deployment.
+services:
+  pg:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bbdev}
+      POSTGRES_DB: ${POSTGRES_DB:-bbdev}
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - ./.data:/var/lib/postgresql/data
+
