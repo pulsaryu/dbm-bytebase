@@ -21,6 +21,7 @@ var (
 	sharedPg17     = startOnce(getPg17Container)
 	sharedTLSPg    = startOnce(getTLSPgContainer)
 	sharedMSSQL    = startOnce(getMSSQLContainer)
+	sharedMySQL    = startOnce(GetMySQLContainer)
 	sharedTiDB     = startOnce(getTiDBContainer)
 	sharedMongo    = startOnce(getMongoDBContainer)
 
@@ -95,6 +96,10 @@ func SharedTLSPgContainer(t testing.TB) *Container { return shared(t, sharedTLSP
 // Its certificate is signed by the CA at GetTLSCAPath.
 func SharedMSSQLContainer(t testing.TB) *Container { return shared(t, sharedMSSQL) }
 
+// SharedMySQLContainer is SharedPgContainer for MySQL; tests take a database each
+// with NewMySQLDatabase.
+func SharedMySQLContainer(t testing.TB) *Container { return shared(t, sharedMySQL) }
+
 // SharedTiDBContainer is SharedPgContainer for TiDB; tests take a database each
 // with NewTiDBDatabase.
 func SharedTiDBContainer(t testing.TB) *Container { return shared(t, sharedTiDB) }
@@ -127,6 +132,19 @@ func createPgDatabase(t testing.TB, container *Container) (string, *sql.DB) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 	return name, db
+}
+
+// NewMySQLDatabase creates an empty database for the test on the shared MySQL
+// container and returns the container with the database's name. Anything
+// server-wide the test creates, such as a user, should be named after the
+// database so that parallel tests cannot collide.
+func NewMySQLDatabase(t testing.TB) (*Container, string) {
+	t.Helper()
+	container := SharedMySQLContainer(t)
+	name := newDatabaseName()
+	_, err := container.GetDB().Exec("CREATE DATABASE " + name)
+	require.NoError(t, err)
+	return container, name
 }
 
 // NewTiDBDatabase creates an empty database for the test on the shared TiDB

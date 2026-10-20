@@ -1,12 +1,20 @@
 package mysql
 
 import (
+	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 	"testing"
 
 	metadatapb "github.com/bytebase/omni/metadata"
+	"github.com/go-sql-driver/mysql"
+	"github.com/pkg/errors"
 	"github.com/stretchr/testify/require"
+
+	"github.com/bytebase/bytebase/backend/common/testcontainer"
+	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
+	"github.com/bytebase/bytebase/backend/plugin/db"
 )
 
 func TestSetColumnMetadataDefault(t *testing.T) {
@@ -901,4 +909,91 @@ func TestStripReturnsCharset(t *testing.T) {
 	for _, tc := range testCases {
 		require.Equal(t, tc.want, stripReturnsCharset(tc.def), tc.name)
 	}
+}
+
+// TestIsAccessDeniedError pins the privilege refusals the sync skips an object on
+// rather than failing the whole database: the error arrives wrapped in the query it
+// came from, and an unrelated server error must still fail the sync.
+func TestIsAccessDeniedError(t *testing.T) {
+	testCases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "select denied on a view, as SHOW CREATE VIEW reports it",
+			err: errors.Wrapf(&mysql.MySQLError{
+				Number:  erTableAccessDenied,
+				Message: "SELECT command denied to user 'u'@'h' for table 'v'",
+			}, "failed to scan row for query: %s", "SHOW CREATE VIEW `d`.`v`"),
+			want: true,
+		},
+		{name: "column denied", err: &mysql.MySQLError{Number: erColumnAccessDenied}, want: true},
+		{name: "database denied", err: &mysql.MySQLError{Number: erDBAccessDenied}, want: true},
+		{name: "privilege denied", err: &mysql.MySQLError{Number: erSpecificAccessDenied}, want: true},
+		{name: "routine denied", err: &mysql.MySQLError{Number: erProcAccessDenied}, want: true},
+		{name: "unknown table", err: &mysql.MySQLError{Number: 1146, Message: "Table 'd.v' doesn't exist"}, want: false},
+		{name: "no rows", err: sql.ErrNoRows, want: false},
+		{name: "nil", err: nil, want: false},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, isAccessDeniedError(tc.err))
+		})
+	}
+}
+
+// TestSyncDBSchemaSkipsDeniedView proves a user granted on part of a database syncs
+// that part. MySQL lists a view the user has no SELECT on in information_schema.VIEWS,
+// with an empty definition, but refuses SHOW CREATE VIEW for it; that error used to
+// fail the whole database's sync, so not even the granted table was synced.
+func TestSyncDBSchemaSkipsDeniedView(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	container, database := testcontainer.NewMySQLDatabase(t)
+	// A user is server-wide, so name it after the database to keep parallel tests apart.
+	user := database + "_restricted"
+
+	_, err := container.GetDB().ExecContext(ctx, fmt.Sprintf(`
+		CREATE TABLE %[1]s.granted (id INT PRIMARY KEY, name VARCHAR(10));
+		CREATE VIEW %[1]s.granted_view AS SELECT id FROM %[1]s.granted;
+		CREATE VIEW %[1]s.denied_view AS SELECT name FROM %[1]s.granted;
+		CREATE USER '%[2]s'@'%%' IDENTIFIED BY '%[2]s';
+		GRANT SELECT ON %[1]s.granted TO '%[2]s'@'%%';
+		GRANT SELECT, SHOW VIEW ON %[1]s.granted_view TO '%[2]s'@'%%';
+		GRANT SHOW VIEW ON %[1]s.denied_view TO '%[2]s'@'%%';
+	`, database, user))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, err := container.GetDB().ExecContext(ctx, fmt.Sprintf("DROP USER '%s'@'%%'", user))
+		require.NoError(t, err)
+	})
+
+	driver, err := (&Driver{}).Open(ctx, storepb.Engine_MYSQL, db.ConnectionConfig{
+		DataSource: &storepb.DataSource{
+			Type:     storepb.DataSourceType_ADMIN,
+			Username: user,
+			Host:     container.GetHost(),
+			Port:     container.GetPort(),
+		},
+		Password:          user,
+		ConnectionContext: db.ConnectionContext{DatabaseName: database},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, driver.Close(ctx)) })
+
+	metadata, err := driver.SyncDBSchema(ctx)
+	require.NoError(t, err)
+	require.Len(t, metadata.Schemas, 1)
+
+	var tables, views []string
+	for _, table := range metadata.Schemas[0].Tables {
+		tables = append(tables, table.Name)
+	}
+	for _, view := range metadata.Schemas[0].Views {
+		views = append(views, view.Name)
+	}
+	require.Equal(t, []string{"granted"}, tables)
+	require.Equal(t, []string{"granted_view"}, views)
+	require.NotEmpty(t, metadata.Schemas[0].Views[0].Definition)
 }

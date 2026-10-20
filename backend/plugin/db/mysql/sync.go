@@ -19,6 +19,7 @@ import (
 	"golang.org/x/text/transform"
 
 	"github.com/blang/semver/v4"
+	"github.com/go-sql-driver/mysql"
 	"github.com/pkg/errors"
 
 	"github.com/bytebase/bytebase/backend/common"
@@ -64,6 +65,32 @@ var (
 	// containing a backtick (or ", ") must not mis-split the list.
 	viewDefMatcher = regexp.MustCompile("CREATE ALGORITHM=(UNDEFINED|MERGE|TEMPTABLE) DEFINER=`([^`]+)`@`([^`]+)` SQL SECURITY (DEFINER|INVOKER) VIEW `([^`]+)`(?:\\.`([^`]+)`)?( \\(`(?:[^`]|``)+`(?:, ?`(?:[^`]|``)+`)*\\))? AS (?P<def>.+)")
 )
+
+// The MySQL error numbers for a statement the server refuses for want of a privilege.
+const (
+	erDBAccessDenied       = 1044
+	erTableAccessDenied    = 1142
+	erColumnAccessDenied   = 1143
+	erSpecificAccessDenied = 1227
+	erProcAccessDenied     = 1370
+)
+
+// isAccessDeniedError reports whether err is the server refusing a statement because
+// the user lacks a privilege. information_schema omits what the user cannot see, but
+// the per-object SHOW CREATE statements that fill in definitions fail instead, so a
+// sync that returned those errors synced nothing — not even the granted tables.
+func isAccessDeniedError(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	if !errors.As(err, &mysqlErr) {
+		return false
+	}
+	switch mysqlErr.Number {
+	case erDBAccessDenied, erTableAccessDenied, erColumnAccessDenied, erSpecificAccessDenied, erProcAccessDenied:
+		return true
+	default:
+		return false
+	}
+}
 
 // isStockMySQL reports whether the version suffix returned by getVersion (the text
 // after the numeric version, e.g. "-MariaDB", "-OceanBase-v4.2", "-TiDB-v7.5") denotes
@@ -514,13 +541,22 @@ func (d *Driver) SyncDBSchema(ctx context.Context) (*metadatapb.DatabaseSchemaMe
 	if err := viewRows.Err(); err != nil {
 		return nil, util.FormatErrorWithQuery(err, viewQuery)
 	}
-	for key := range viewMap {
+	for key, view := range viewMap {
 		def, err := d.reconcileViewDefinition(ctx, d.databaseName, key.Table)
 		if err != nil {
-			return nil, err
+			if !isAccessDeniedError(err) {
+				return nil, err
+			}
+			// MySQL refuses SHOW CREATE VIEW to a user without SELECT on the view, and
+			// reports an empty VIEW_DEFINITION for it as well, so there is nothing left
+			// to sync. Skipping the view keeps the rest of the database syncing.
+			slog.Warn("skipping the view the user has no privilege to read",
+				slog.String("database", d.databaseName), slog.String("view", key.Table), log.BBError(err))
+			delete(viewMap, key)
+			continue
 		}
 		if def != "" {
-			viewMap[key].Definition = def
+			view.Definition = def
 		}
 	}
 
@@ -1454,7 +1490,10 @@ func (d *Driver) listPartitionTables(ctx context.Context, databaseName string) (
 		showQuery := fmt.Sprintf("SHOW CREATE TABLE `%s`.`%s`", databaseName, tableKey.Table)
 		showRows, err := d.db.QueryContext(ctx, showQuery)
 		if err != nil {
+			// Reading on would dereference nil rows. The table keeps the partitions read
+			// above, only without the default partition count.
 			slog.Warn("failed to execute query", slog.String("query", showQuery), log.BBError(err))
+			continue
 		}
 		for showRows.Next() {
 			var tableName, createTable string
