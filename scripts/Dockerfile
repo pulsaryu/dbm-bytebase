@@ -65,3 +65,30 @@ CMD ["--port", "8080", "--data", "/var/opt/bytebase"]
 HEALTHCHECK --interval=5m --timeout=60s CMD curl -f http://localhost:8080/healthz || exit 1
 
 ENTRYPOINT ["bytebase"]
+
+# "lite" packages only the frontend and backend, without the bundled Postgres.
+# Requires PG_URL to point at an external Postgres instance.
+FROM alpine:3.24 AS lite
+ARG VERSION
+ARG GIT_COMMIT
+
+LABEL org.opencontainers.image.version=${VERSION}
+LABEL org.opencontainers.image.revision=${GIT_COMMIT}
+
+RUN addgroup --gid 113 --system bytebase && adduser --uid 113 --system bytebase && adduser bytebase bytebase
+RUN mkdir -p /var/opt/bytebase
+RUN apk update
+RUN apk add --no-cache gnupg curl psmisc procps ncurses krb5
+
+RUN touch /etc/bb.env
+COPY --from=backend /backend-build/bytebase /usr/local/bin/
+COPY --from=backend /etc/ssl/certs /etc/ssl/certs
+
+ENV OPENSSL_CONF=/etc/ssl/
+ENV GOGC=50
+
+CMD ["--port", "8080", "--data", "/var/opt/bytebase"]
+
+HEALTHCHECK --interval=5m --timeout=60s CMD curl -f http://localhost:8080/healthz || exit 1
+
+ENTRYPOINT ["bytebase"]
