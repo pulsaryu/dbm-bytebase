@@ -135,6 +135,11 @@ type QueryContext struct {
 	// from the statement, so a driver must withhold rows the statement does not trace
 	// to columns, such as those a procedure call returns.
 	MaskingEnabled bool
+	// AllowUnresolvedMaskingColumns serves rows whose source columns are missing from
+	// the synced schema — which no masking policy can match — instead of refusing the
+	// query. It carries QueryDataPolicy.allow_unresolved_masking_columns, which
+	// queryRetry and MaskResults read off the QueryContext. No driver reads the field.
+	AllowUnresolvedMaskingColumns bool
 	// DataSourceType records which data source runs the query; the Oracle private-link guard
 	// exempts the admin one, whose ALL_DB_LINKS the sync recorded.
 	DataSourceType storepb.DataSourceType

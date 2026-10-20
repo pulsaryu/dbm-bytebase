@@ -381,12 +381,13 @@ func (s *Store) GetRolloutPolicy(ctx context.Context, workspaceID string, enviro
 }
 
 type EffectiveQueryDataPolicy struct {
-	MaximumResultSize        int64
-	MaximumResultRows        int32
-	DisableCopyData          bool
-	DisableExport            bool
-	MaxQueryTimeoutInSeconds int64
-	AllowAdminDataSource     bool
+	MaximumResultSize             int64
+	MaximumResultRows             int32
+	DisableCopyData               bool
+	DisableExport                 bool
+	MaxQueryTimeoutInSeconds      int64
+	AllowAdminDataSource          bool
+	AllowUnresolvedMaskingColumns bool
 }
 
 func formatEffectiveQueryDataPolicy(policy *storepb.QueryDataPolicy) *EffectiveQueryDataPolicy {
@@ -396,10 +397,11 @@ func formatEffectiveQueryDataPolicy(policy *storepb.QueryDataPolicy) *EffectiveQ
 	}
 
 	return &EffectiveQueryDataPolicy{
-		MaximumResultRows:    maximumResultRows,
-		DisableCopyData:      policy.GetDisableCopyData(),
-		DisableExport:        policy.GetDisableExport(),
-		AllowAdminDataSource: policy.GetAllowAdminDataSource(),
+		MaximumResultRows:             maximumResultRows,
+		DisableCopyData:               policy.GetDisableCopyData(),
+		DisableExport:                 policy.GetDisableExport(),
+		AllowAdminDataSource:          policy.GetAllowAdminDataSource(),
+		AllowUnresolvedMaskingColumns: policy.GetAllowUnresolvedMaskingColumns(),
 	}
 }
 
@@ -428,12 +430,13 @@ func (s *Store) GetEffectiveQueryDataPolicy(ctx context.Context, workspaceID str
 	}
 
 	return &EffectiveQueryDataPolicy{
-		DisableCopyData:          formatWorkspacePolicy.DisableCopyData,
-		DisableExport:            formatWorkspacePolicy.DisableExport,
-		MaximumResultRows:        min(formatWorkspacePolicy.MaximumResultRows, formatProjectPolicy.MaximumResultRows),
-		MaximumResultSize:        maximumResultSize,
-		MaxQueryTimeoutInSeconds: queryTimeout,
-		AllowAdminDataSource:     formatWorkspacePolicy.AllowAdminDataSource,
+		DisableCopyData:               formatWorkspacePolicy.DisableCopyData,
+		DisableExport:                 formatWorkspacePolicy.DisableExport,
+		MaximumResultRows:             min(formatWorkspacePolicy.MaximumResultRows, formatProjectPolicy.MaximumResultRows),
+		MaximumResultSize:             maximumResultSize,
+		MaxQueryTimeoutInSeconds:      queryTimeout,
+		AllowAdminDataSource:          formatWorkspacePolicy.AllowAdminDataSource,
+		AllowUnresolvedMaskingColumns: formatWorkspacePolicy.AllowUnresolvedMaskingColumns,
 	}, nil
 }
 

@@ -2,6 +2,7 @@ package v1
 
 import (
 	"context"
+	"log/slog"
 
 	metadatapb "github.com/bytebase/omni/metadata"
 	"github.com/pkg/errors"
@@ -27,7 +28,7 @@ func NewQueryResultMasker(store *store.Store) *QueryResultMasker {
 }
 
 // MaskResults masks the result in-place based on the dynamic masking policy, query-span, instance and action.
-func (s *QueryResultMasker) MaskResults(ctx context.Context, spans []*parserbase.QuerySpan, results []*v1pb.QueryResult, instance *store.InstanceMessage, user *store.UserMessage) error {
+func (s *QueryResultMasker) MaskResults(ctx context.Context, spans []*parserbase.QuerySpan, results []*v1pb.QueryResult, instance *store.InstanceMessage, user *store.UserMessage, allowUnresolvedColumns bool) error {
 	maskerWorkspaceID := common.GetWorkspaceIDFromContext(ctx)
 	classificationSetting, err := s.store.GetDataClassificationSetting(ctx, maskerWorkspaceID)
 	if err != nil {
@@ -59,15 +60,17 @@ func (s *QueryResultMasker) MaskResults(ctx context.Context, spans []*parserbase
 		if results[i].Error == "" && spans[i].FunctionNotSupportedError != nil {
 			return errors.Errorf("masking error: %v", spans[i].FunctionNotSupportedError)
 		}
-		if results[i].Error == "" && spans[i].NotFoundError != nil {
-			return errors.Errorf("masking error: %v", spans[i].NotFoundError)
-		}
-		// Reject before error handling or masking: results may contain both partial
+		// Decided before error handling or masking: results may contain both partial
 		// rows and an error, and unresolved lineage cannot safely mask those rows.
-		if maskingBlockedByUnresolvedColumns(spans[i], instance) {
-			return errors.Errorf(
-				"masking cannot be applied: %v, so the query was not returned",
-				spans[i].UnresolvedColumnsError)
+		if unresolved := unresolvedMaskingLineage(spans[i], instance, results[i].Error != ""); unresolved != nil {
+			if !allowUnresolvedColumns {
+				return errors.Errorf(
+					"masking cannot be applied: %v, so the query was not returned",
+					unresolved)
+			}
+			slog.Warn("returning rows masking could not analyze: no masking policy was checked against them",
+				slog.String("instance", instance.ResourceID),
+				slog.String("detail", unresolved.Error()))
 		}
 		// Skip masking for error result, but redact the error message if the
 		// statement touches masked columns — database errors can contain
@@ -90,6 +93,48 @@ func (s *QueryResultMasker) MaskResults(ctx context.Context, spans []*parserbase
 		doMaskResult(maskers, reasons, results[i])
 	}
 
+	return nil
+}
+
+// preMaskingRefusal returns the span error that withholds results before masking
+// runs, or nil when every statement may be served. Both refusals keep rows masking
+// could not analyze from reaching the user, so neither applies where masking is off;
+// allowUnresolved then trades the unresolved-lineage refusal for availability, while
+// a function masking cannot trace still refuses.
+func preMaskingRefusal(spans []*parserbase.QuerySpan, results []*v1pb.QueryResult, maskingEnabled, allowUnresolved bool) error {
+	if !maskingEnabled {
+		return nil
+	}
+	for i, result := range results {
+		if i >= len(spans) || result.Error != "" {
+			continue
+		}
+		if spans[i].FunctionNotSupportedError != nil {
+			return spans[i].FunctionNotSupportedError
+		}
+		if spans[i].NotFoundError != nil && !allowUnresolved {
+			return spans[i].NotFoundError
+		}
+	}
+	return nil
+}
+
+// unresolvedMaskingLineage returns the lineage masking could not resolve for a span,
+// or nil when it resolved everything. A result column whose source column is missing
+// from the synced schema matches no masking policy, so its rows would reach the user
+// without any policy having been checked against them. A result that errored still
+// goes through the unresolved-columns check: partial rows can accompany an error and
+// are no more maskable than whole ones.
+func unresolvedMaskingLineage(span *parserbase.QuerySpan, instance *store.InstanceMessage, resultErrored bool) error {
+	if span == nil {
+		return nil
+	}
+	if !resultErrored && span.NotFoundError != nil {
+		return span.NotFoundError
+	}
+	if maskingBlockedByUnresolvedColumns(span, instance) {
+		return span.UnresolvedColumnsError
+	}
 	return nil
 }
 

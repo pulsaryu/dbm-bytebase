@@ -176,11 +176,12 @@ func (s *SQLService) AdminExecute(ctx context.Context, stream *connect.BidiStrea
 // (RainbowDashy). No driver reads the field.
 func buildExportQueryContext(restriction *store.EffectiveQueryDataPolicy, userEmail string, schema *string, container string, skipMasking bool) db.QueryContext {
 	qc := db.QueryContext{
-		Limit:                int(restriction.MaximumResultRows),
-		OperatorEmail:        userEmail,
-		MaximumSQLResultSize: restriction.MaximumResultSize,
-		Container:            container,
-		SkipMasking:          skipMasking,
+		Limit:                         int(restriction.MaximumResultRows),
+		OperatorEmail:                 userEmail,
+		MaximumSQLResultSize:          restriction.MaximumResultSize,
+		Container:                     container,
+		SkipMasking:                   skipMasking,
+		AllowUnresolvedMaskingColumns: restriction.AllowUnresolvedMaskingColumns,
 	}
 	if restriction.MaxQueryTimeoutInSeconds > 0 {
 		qc.Timeout = &durationpb.Duration{Seconds: restriction.MaxQueryTimeoutInSeconds}
@@ -398,14 +399,15 @@ func (s *SQLService) Query(ctx context.Context, req *connect.Request[v1pb.QueryR
 
 	startTime := time.Now()
 	queryContext := db.QueryContext{
-		Explain:              request.Explain,
-		DataSourceType:       dataSource.GetType(),
-		Limit:                int(queryRestriction.MaximumResultRows),
-		OperatorEmail:        user.Email,
-		Option:               request.QueryOption,
-		Container:            request.GetContainer(),
-		MaximumSQLResultSize: queryRestriction.MaximumResultSize,
-		SkipMasking:          accessGrant != nil && accessGrant.Payload.Unmask,
+		Explain:                       request.Explain,
+		DataSourceType:                dataSource.GetType(),
+		Limit:                         int(queryRestriction.MaximumResultRows),
+		OperatorEmail:                 user.Email,
+		Option:                        request.QueryOption,
+		Container:                     request.GetContainer(),
+		MaximumSQLResultSize:          queryRestriction.MaximumResultSize,
+		SkipMasking:                   accessGrant != nil && accessGrant.Payload.Unmask,
+		AllowUnresolvedMaskingColumns: queryRestriction.AllowUnresolvedMaskingColumns,
 	}
 	if request.Schema != nil {
 		queryContext.Schema = *request.Schema
@@ -994,16 +996,10 @@ func queryRetry(
 			}
 		}
 	}
-	// The second query span should not tolerate any error, but we should retail the original error from database if possible.
-	for i, result := range results {
-		if i < len(spans) && result.Error == "" {
-			if spans[i].FunctionNotSupportedError != nil {
-				return nil, nil, duration, connect.NewError(connect.CodeInternal, errors.Errorf("failed to mask data: %v", spans[i].FunctionNotSupportedError))
-			}
-			if spans[i].NotFoundError != nil {
-				return nil, nil, duration, connect.NewError(connect.CodeInternal, errors.Errorf("failed to mask data: %v", spans[i].NotFoundError))
-			}
-		}
+	// The spans are the second attempt's: the re-sync above already gave stale
+	// metadata its chance to resolve them.
+	if err := preMaskingRefusal(spans, results, maskingEnabled, queryContext.AllowUnresolvedMaskingColumns); err != nil {
+		return nil, nil, duration, connect.NewError(connect.CodeInternal, errors.Errorf("failed to mask data: %v", err))
 	}
 
 	if maskingEnabled {
@@ -1018,7 +1014,7 @@ func queryRetry(
 			}
 		} else {
 			masker := NewQueryResultMasker(stores)
-			if err := masker.MaskResults(ctx, spans, results, instance, user); err != nil {
+			if err := masker.MaskResults(ctx, spans, results, instance, user, queryContext.AllowUnresolvedMaskingColumns); err != nil {
 				return nil, nil, duration, connect.NewError(connect.CodeInternal, errors.New(err.Error()))
 			}
 
@@ -1307,7 +1303,7 @@ func doExport(
 
 	if !skipMasking && licenseService.IsFeatureEnabledForInstance(ctx, common.GetWorkspaceIDFromContext(ctx), v1pb.PlanFeature_FEATURE_DATA_MASKING, instance) == nil {
 		masker := NewQueryResultMasker(stores)
-		if err := masker.MaskResults(ctx, spans, results, instance, user); err != nil {
+		if err := masker.MaskResults(ctx, spans, results, instance, user, queryContext.AllowUnresolvedMaskingColumns); err != nil {
 			return nil, duration, err
 		}
 	}

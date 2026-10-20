@@ -139,6 +139,13 @@ message QueryDataPolicy {
   // Allow using the admin data source to query in the SQL editor.
   bool allow_admin_data_source = 9;
 
+  // workspace-level policy
+  // Return rows masking could not analyze instead of refusing the query. A result
+  // column whose source column is missing from the synced schema matches no masking
+  // policy, and a statement is masked whole or refused whole, so one unresolved
+  // column leaves that statement's other columns unmasked too.
+  bool allow_unresolved_masking_columns = 10;
+
   // ================
   // Deprecate following fields.
   // Disallow running DDL statements in the SQL editor.

@@ -396,6 +396,19 @@ export declare type QueryDataPolicy = Message<"bytebase.v1.QueryDataPolicy"> & {
    * @generated from field: bool allow_admin_data_source = 4;
    */
   allowAdminDataSource: boolean;
+
+  /**
+   * workspace-level policy
+   * Return rows masking could not analyze instead of refusing the query. A result
+   * column whose source column is missing from the synced schema matches no masking
+   * policy, and a statement is masked whole or refused whole, so one unresolved
+   * column leaves that statement's other columns unmasked too. Turn it on only
+   * where the synced schema is knowingly incomplete, such as a data source account
+   * with no privilege on a base table that a queried view reads.
+   *
+   * @generated from field: bool allow_unresolved_masking_columns = 5;
+   */
+  allowUnresolvedMaskingColumns: boolean;
 };
 
 /**

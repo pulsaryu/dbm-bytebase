@@ -231,6 +231,9 @@ func (x *QueryDataPolicy) Equal(y *QueryDataPolicy) bool {
 	if x.AllowAdminDataSource != y.AllowAdminDataSource {
 		return false
 	}
+	if x.AllowUnresolvedMaskingColumns != y.AllowUnresolvedMaskingColumns {
+		return false
+	}
 	return true
 }
 

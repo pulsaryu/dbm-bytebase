@@ -170,20 +170,22 @@ func convertToV1PBQueryDataPolicy(payloadStr string) (*v1pb.Policy_QueryDataPoli
 	}
 	return &v1pb.Policy_QueryDataPolicy{
 		QueryDataPolicy: &v1pb.QueryDataPolicy{
-			DisableExport:        payload.DisableExport,
-			MaximumResultRows:    payload.MaximumResultRows,
-			DisableCopyData:      payload.DisableCopyData,
-			AllowAdminDataSource: payload.AllowAdminDataSource,
+			DisableExport:                 payload.DisableExport,
+			MaximumResultRows:             payload.MaximumResultRows,
+			DisableCopyData:               payload.DisableCopyData,
+			AllowAdminDataSource:          payload.AllowAdminDataSource,
+			AllowUnresolvedMaskingColumns: payload.AllowUnresolvedMaskingColumns,
 		},
 	}, nil
 }
 
 func convertToQueryDataPolicyPayload(policy *v1pb.QueryDataPolicy) *storepb.QueryDataPolicy {
 	return &storepb.QueryDataPolicy{
-		DisableExport:        policy.DisableExport,
-		MaximumResultRows:    policy.MaximumResultRows,
-		DisableCopyData:      policy.DisableCopyData,
-		AllowAdminDataSource: policy.AllowAdminDataSource,
+		DisableExport:                 policy.DisableExport,
+		MaximumResultRows:             policy.MaximumResultRows,
+		DisableCopyData:               policy.DisableCopyData,
+		AllowAdminDataSource:          policy.AllowAdminDataSource,
+		AllowUnresolvedMaskingColumns: policy.AllowUnresolvedMaskingColumns,
 	}
 }
 
