@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -498,6 +500,18 @@ func (s *SQLService) Query(ctx context.Context, req *connect.Request[v1pb.QueryR
 	return connect.NewResponse(response), nil
 }
 
+// allowUnresolvedMaskingColumnsEnv is the deployment-level form of
+// QueryDataPolicy.allow_unresolved_masking_columns, for an operator who cannot reach
+// the policy: it is read from the server's environment, applies to every workspace,
+// and needs no query-policy license. The policy can only add to it, never switch it
+// off. Accepted values are the ones strconv.ParseBool takes, so "true" or "1".
+const allowUnresolvedMaskingColumnsEnv = "ALLOW_UNRESOLVED_MASKING_COLUMNS"
+
+func allowUnresolvedMaskingColumnsFromEnv() bool {
+	allowed, err := strconv.ParseBool(os.Getenv(allowUnresolvedMaskingColumnsEnv))
+	return err == nil && allowed
+}
+
 func getEffectiveQueryDataPolicy(
 	ctx context.Context,
 	stores *store.Store,
@@ -505,9 +519,11 @@ func getEffectiveQueryDataPolicy(
 	limit int32,
 	projectID string,
 ) *store.EffectiveQueryDataPolicy {
+	allowUnresolvedMaskingColumns := allowUnresolvedMaskingColumnsFromEnv()
 	value := &store.EffectiveQueryDataPolicy{
-		MaximumResultSize: common.DefaultMaximumSQLResultSize,
-		MaximumResultRows: math.MaxInt32,
+		MaximumResultSize:             common.DefaultMaximumSQLResultSize,
+		MaximumResultRows:             math.MaxInt32,
+		AllowUnresolvedMaskingColumns: allowUnresolvedMaskingColumns,
 	}
 	if err := licenseService.IsFeatureEnabled(ctx, common.GetWorkspaceIDFromContext(ctx), v1pb.PlanFeature_FEATURE_QUERY_POLICY); err == nil {
 		policy, err := stores.GetEffectiveQueryDataPolicy(ctx, common.GetWorkspaceIDFromContext(ctx), common.FormatProject(projectID))
@@ -516,6 +532,7 @@ func getEffectiveQueryDataPolicy(
 			return value
 		}
 		value = policy
+		value.AllowUnresolvedMaskingColumns = value.AllowUnresolvedMaskingColumns || allowUnresolvedMaskingColumns
 	}
 	if limit > 0 {
 		value.MaximumResultRows = min(limit, value.MaximumResultRows)

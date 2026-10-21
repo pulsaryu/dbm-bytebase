@@ -27,6 +27,12 @@ not resolve. It exists for a data source account scoped so narrowly that the syn
 knowingly incomplete: granted on a view, with no privilege on the base table the view reads, so
 `information_schema.COLUMNS` hides that column from the sync.
 
+The same switch has a deployment-level form, `ALLOW_UNRESOLVED_MASKING_COLUMNS` in the server's
+environment, for an operator who cannot reach the policy — no query-policy license, or no API
+access. It applies to every workspace, takes the values `strconv.ParseBool` accepts (`true`, `1`),
+and the policy can only add to it, never switch it off. Both are read in one place,
+`getEffectiveQueryDataPolicy`, so the rest of the query path sees a single effective answer.
+
 Turning it on is a real weakening, for two reasons worth stating plainly:
 
 - **A statement is masked whole or refused whole.** MySQL's extractor, for one, reports no result

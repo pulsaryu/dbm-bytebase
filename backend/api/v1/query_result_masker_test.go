@@ -8,6 +8,7 @@ import (
 
 	"github.com/bytebase/bytebase/backend/common"
 	"github.com/bytebase/bytebase/backend/common/testcontainer"
+	"github.com/bytebase/bytebase/backend/enterprise"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	v1pb "github.com/bytebase/bytebase/backend/generated-go/v1"
 	parserbase "github.com/bytebase/bytebase/backend/plugin/parser/base"
@@ -264,4 +265,49 @@ func TestMaskResultsAllowsUnresolvedColumns(t *testing.T) {
 	allowed := newResults()
 	require.NoError(t, masker.MaskResults(ctx, spans, allowed, instance, user, true))
 	require.Equal(t, prefix, allowed[0].Rows[0].Values[0].GetStringValue())
+}
+
+func TestAllowUnresolvedMaskingColumnsFromEnv(t *testing.T) {
+	testCases := []struct {
+		value string
+		want  bool
+	}{
+		{value: "", want: false},
+		{value: "true", want: true},
+		{value: "TRUE", want: true},
+		{value: "1", want: true},
+		{value: "false", want: false},
+		{value: "0", want: false},
+		// Not a value strconv.ParseBool takes, so it is not an opt-in.
+		{value: "yes", want: false},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Setenv(allowUnresolvedMaskingColumnsEnv, tc.value)
+			require.Equal(t, tc.want, allowUnresolvedMaskingColumnsFromEnv())
+		})
+	}
+}
+
+// TestGetEffectiveQueryDataPolicyUnresolvedMaskingColumns covers the two ways the
+// switch can be on. The environment one has to reach an operator who cannot set the
+// policy, so it holds without the query-policy license the policy itself sits behind.
+func TestGetEffectiveQueryDataPolicyUnresolvedMaskingColumns(t *testing.T) {
+	ctx := context.WithValue(context.Background(), common.WorkspaceIDContextKey, "default")
+	db, stores, _ := testcontainer.NewMetadataDB(t)
+	_, err := db.ExecContext(ctx, "INSERT INTO workspace (resource_id) VALUES ('default')")
+	require.NoError(t, err)
+	// Release mode prod with no license: FEATURE_QUERY_POLICY is off, so the policy
+	// is never read.
+	unlicensed, err := enterprise.NewLicenseService(common.ReleaseModeProd, stores, false, "")
+	require.NoError(t, err)
+
+	t.Run("off by default", func(t *testing.T) {
+		require.False(t, getEffectiveQueryDataPolicy(ctx, stores, unlicensed, 0, "test-project").AllowUnresolvedMaskingColumns)
+	})
+
+	t.Run("on from the environment, unlicensed", func(t *testing.T) {
+		t.Setenv(allowUnresolvedMaskingColumnsEnv, "true")
+		require.True(t, getEffectiveQueryDataPolicy(ctx, stores, unlicensed, 0, "test-project").AllowUnresolvedMaskingColumns)
+	})
 }
